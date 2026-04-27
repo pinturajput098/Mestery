@@ -1,15 +1,13 @@
 import os
 import requests
 import telebot
-from bs4 import BeautifulSoup
 from flask import Flask
 from threading import Thread
 import time
 
-# --- RENDER ENGINE ---
 app = Flask('')
 @app.route('/')
-def home(): return "Mestrey AI is Online!"
+def home(): return "Mestrey AI (API Mode) is Online!"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
@@ -21,22 +19,20 @@ def keep_alive():
 # --- CONFIG ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TD_API_KEY = os.getenv("TWELVE_DATA_API_KEY") # Nayi API Key variable
+
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# --- ROBUST PRICE FETCHING ---
-def fetch_finance_data(ticker):
-    """Yahoo Finance API with robust headers"""
+def get_metal_price(symbol):
+    """Twelve Data API se accurate price lena"""
     try:
-        # Ticker fix for Yahoo
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        res = requests.get(url, headers=headers, timeout=10).json()
-        price = res['quoteResponse']['result'][0]['regularMarketPrice']
-        return price
+        # XAU/USD conversion
+        api_symbol = "XAU/USD" if symbol == "XAUUSD=X" else "XAG/USD" if symbol == "XAGUSD=X" else symbol
+        url = f"https://api.twelvedata.com/price?symbol={api_symbol}&apikey={TD_API_KEY}"
+        res = requests.get(url, timeout=10).json()
+        return float(res['price'])
     except Exception as e:
-        print(f"Price Error for {ticker}: {e}")
+        print(f"API Error: {e}")
         return None
 
 def get_market_context(user_input):
@@ -44,56 +40,35 @@ def get_market_context(user_input):
     msg = user_input.lower()
     mapping = {
         "gold": "XAUUSD=X", "xau": "XAUUSD=X", "sona": "XAUUSD=X",
-        "silver": "XAGUSD=X", "xag": "XAGUSD=X", "chandi": "XAGUSD=X",
-        "eur": "EURUSD=X", "gbp": "GBPUSD=X", "jpy": "USDJPY=X"
+        "silver": "XAGUSD=X", "xag": "XAGUSD=X", "chandi": "XAGUSD=X"
     }
     for key, ticker in mapping.items():
         if key in msg:
-            p = fetch_finance_data(ticker)
-            if p: context += f"🔴 LIVE {key.upper()} PRICE: ${p}\n"
+            p = get_metal_price(ticker)
+            if p: context += f"🔴 LIVE {key.upper()} PRICE: ${p:.2f}\n"
     
-    # Crypto Backup
-    for coin in ["btc", "eth", "sol"]:
-        if coin in msg:
-            try:
-                r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={coin.upper()}USDT").json()
-                context += f"🔵 LIVE {coin.upper()} PRICE: ${float(r['price']):,.2f}\n"
-            except: pass
+    # Forex Backup (Binance filters forex, Twelve Data handles it)
+    if "eur" in msg or "gbp" in msg:
+        pair = "EUR/USD" if "eur" in msg else "GBP/USD"
+        p = get_metal_price(pair)
+        if p: context += f"🔵 LIVE {pair} PRICE: ${p:.5f}\n"
+            
     return context
-
-# --- REAL-TIME NEWS FETCHING ---
-def get_news():
-    """Forex Factory High Impact News Analysis"""
-    try:
-        url = "https://www.forexfactory.com/calendar"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.content, 'html.parser')
-        rows = soup.find_all('tr', class_='calendar__row--high-impact')
-        news_data = []
-        for row in rows[:5]:
-            curr = row.find('td', class_='calendar__currency').text.strip()
-            event = row.find('span', class_='calendar__event-title').text.strip()
-            news_data.append(f"🔥 [{curr}] {event}")
-        return "\n".join(news_data) if news_data else "No High Impact News right now."
-    except:
-        return "News sources temporarily unavailable."
 
 def ask_ai(user_input):
     market_data = get_market_context(user_input)
-    news = get_news()
     
-    # AI Prompt ko 'FORCE' karna ki wo LIVE DATA hi use kare
     system_prompt = (
-        "You are Mestrey AI, a pro trader bot by Pintu Rajput. "
-        "IMPORTANT: Only use the 'PROVIDED DATA' below for prices. "
-        "If you see a price in 'PROVIDED DATA', that is the ABSOLUTE current price. "
-        "NEVER say $1947 for Gold if the data says something else. "
-        "Give trading signals based on News and Prices provided. "
-        "Respond in sharp, professional Hinglish."
+        "You are Mestrey AI, a professional trading assistant by Pintu Rajput. "
+        "Use the PROVIDED DATA for current prices. Respond in Hinglish. "
+        "If market data is present, analyze it professionally."
     )
     
-    context = f"--- PROVIDED LIVE DATA ---\n{market_data}\n\n--- TODAY'S NEWS ---\n{news}\n\nUSER QUESTION: {user_input}"
+    # Agar data nahi mila, toh AI ko batao ki wo check kare
+    if not market_data:
+        market_data = "Price data currently unavailable from API."
+
+    context = f"--- LIVE DATA ---\n{market_data}\n\nUSER: {user_input}"
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -105,19 +80,15 @@ def ask_ai(user_input):
         res = requests.post(url, headers=headers, json=data, timeout=20).json()
         return res['choices'][0]['message']['content']
     except:
-        return "Bhai server down hai, thodi der mein check kar."
+        return "Bhai server thoda slow hai, dobara try kar."
 
 @bot.message_handler(func=lambda m: True)
 def handle(m):
     bot.send_chat_action(m.chat.id, 'typing')
     ans = ask_ai(m.text)
-    bot.reply_to(m, ans + "\n\n━━━━━━━━━━━━━━\n⚡ Mestrey AI | @Pinturajput0777", parse_mode="Markdown")
+    bot.reply_to(m, ans + "\n\n━━━━━━━━━━━━━━\n⚡ Mestrey AI | @Pinturajput0777")
 
 if __name__ == "__main__":
     keep_alive()
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=0, timeout=20)
-        except:
-            time.sleep(10)
+    bot.infinity_polling()
 

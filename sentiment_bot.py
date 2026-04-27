@@ -6,149 +6,118 @@ from flask import Flask
 from threading import Thread
 import time
 
-# --- RENDER KEEP-ALIVE ENGINE ---
-# Render ko 'Web Service' ki tarah dikhane ke liye Flask zaruri hai
+# --- RENDER ENGINE ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Mestrey AI is Online and Running 24/7!"
+def home(): return "Mestrey AI is Online!"
 
 def run():
-    # Render automatically port assign karta hai
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    Thread(target=run).start()
 
-# --- CONFIGURATION (Render Dashboard se uthayega) ---
+# --- CONFIG ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# --- MARKET DATA FUNCTIONS ---
-
+# --- ROBUST PRICE FETCHING ---
 def fetch_finance_data(ticker):
-    """Yahoo Finance JSON API se price nikalna"""
+    """Yahoo Finance API with robust headers"""
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=10).json()
-        price = response['chart']['result'][0]['meta']['regularMarketPrice']
+        # Ticker fix for Yahoo
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        res = requests.get(url, headers=headers, timeout=10).json()
+        price = res['quoteResponse']['result'][0]['regularMarketPrice']
         return price
-    except:
+    except Exception as e:
+        print(f"Price Error for {ticker}: {e}")
         return None
 
 def get_market_context(user_input):
-    """User ki query ke hisab se prices context banana"""
     context = ""
     msg = user_input.lower()
-    
     mapping = {
         "gold": "XAUUSD=X", "xau": "XAUUSD=X", "sona": "XAUUSD=X",
         "silver": "XAGUSD=X", "xag": "XAGUSD=X", "chandi": "XAGUSD=X",
-        "platinum": "XPTUSD=X", "xpt": "XPTUSD=X",
-        "eurusd": "EURUSD=X", "gbpusd": "GBPUSD=X"
+        "eur": "EURUSD=X", "gbp": "GBPUSD=X", "jpy": "USDJPY=X"
     }
-
     for key, ticker in mapping.items():
         if key in msg:
-            price = fetch_finance_data(ticker)
-            if price:
-                context += f"Live {key.upper()} Price: ${price}\n"
+            p = fetch_finance_data(ticker)
+            if p: context += f"🔴 LIVE {key.upper()} PRICE: ${p}\n"
     
-    # BTC/ETH for Crypto
+    # Crypto Backup
     for coin in ["btc", "eth", "sol"]:
         if coin in msg:
             try:
                 r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={coin.upper()}USDT").json()
-                context += f"Live {coin.upper()}: ${float(r['price']):,.2f}\n"
+                context += f"🔵 LIVE {coin.upper()} PRICE: ${float(r['price']):,.2f}\n"
             except: pass
-            
     return context
 
+# --- REAL-TIME NEWS FETCHING ---
 def get_news():
-    """Forex Factory se High Impact news fetch karna"""
+    """Forex Factory High Impact News Analysis"""
     try:
         url = "https://www.forexfactory.com/calendar"
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.content, 'html.parser')
-        events = soup.find_all('tr', class_='calendar__row--high-impact')
-        news_list = []
-        for e in events[:5]:
-            curr = e.find('td', class_='calendar__currency').text.strip()
-            title = e.find('span', class_='calendar__event-title').text.strip()
-            news_list.append(f"🔴 [{curr}] {title}")
-        return "\n".join(news_list) if news_list else "No high impact news right now."
+        rows = soup.find_all('tr', class_='calendar__row--high-impact')
+        news_data = []
+        for row in rows[:5]:
+            curr = row.find('td', class_='calendar__currency').text.strip()
+            event = row.find('span', class_='calendar__event-title').text.strip()
+            news_data.append(f"🔥 [{curr}] {event}")
+        return "\n".join(news_data) if news_data else "No High Impact News right now."
     except:
-        return "Market news is updating..."
+        return "News sources temporarily unavailable."
 
 def ask_ai(user_input):
-    """Groq AI Logic"""
     market_data = get_market_context(user_input)
     news = get_news()
     
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    
+    # AI Prompt ko 'FORCE' karna ki wo LIVE DATA hi use kare
     system_prompt = (
-        "You are Mestrey AI, a professional analyst developed by Pintu Rajput (@Pinturajput0777). "
-        "Use provided LIVE DATA for accuracy. Respond in professional Hinglish. "
-        "If whitepaper text is provided, analyze its utility and tokenomics."
+        "You are Mestrey AI, a pro trader bot by Pintu Rajput. "
+        "IMPORTANT: Only use the 'PROVIDED DATA' below for prices. "
+        "If you see a price in 'PROVIDED DATA', that is the ABSOLUTE current price. "
+        "NEVER say $1947 for Gold if the data says something else. "
+        "Give trading signals based on News and Prices provided. "
+        "Respond in sharp, professional Hinglish."
     )
     
-    full_prompt = f"DATA:\n{market_data}\nNEWS:\n{news}\n\nUSER: {user_input}"
+    context = f"--- PROVIDED LIVE DATA ---\n{market_data}\n\n--- TODAY'S NEWS ---\n{news}\n\nUSER QUESTION: {user_input}"
     
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": full_prompt}
-        ]
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": context}]
     }
-    
     try:
         res = requests.post(url, headers=headers, json=data, timeout=20).json()
         return res['choices'][0]['message']['content']
     except:
-        return "Bhai server busy hai, thodi der mein try kar."
-
-# --- HANDLERS ---
-
-@bot.message_handler(commands=['start'])
-def start(m):
-    welcome = (
-        "🤖 *Mestrey AI v5.1 (Render)* 🚀\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Dev: *Pintu Rajput (@Pinturajput0777)*\n\n"
-        "Main 24/7 active hoon. Gold, Silver aur Crypto prices ke liye puchiye!"
-    )
-    bot.reply_to(m, welcome, parse_mode="Markdown")
+        return "Bhai server down hai, thodi der mein check kar."
 
 @bot.message_handler(func=lambda m: True)
-def handle_chat(m):
+def handle(m):
     bot.send_chat_action(m.chat.id, 'typing')
     ans = ask_ai(m.text)
-    signature = "\n\n━━━━━━━━━━━━━━\n⚡ *Mestrey AI | Pintu Rajput*"
-    bot.reply_to(m, ans + signature, parse_mode="Markdown")
-
-# --- MAIN LOOP ---
+    bot.reply_to(m, ans + "\n\n━━━━━━━━━━━━━━\n⚡ Mestrey AI | @Pinturajput0777", parse_mode="Markdown")
 
 if __name__ == "__main__":
-    # Flask ko background thread mein chalao
-    keep_alive() 
-    
-    print("🚀 Mestrey AI is starting on Render...")
-    
-    # Polling loop with error handling
+    keep_alive()
     while True:
         try:
             bot.polling(none_stop=True, interval=0, timeout=20)
-        except Exception as e:
-            print(f"Polling Error: {e}")
-            time.sleep(15) # Error aane par 15 sec wait karke restart
+        except:
+            time.sleep(10)
 
